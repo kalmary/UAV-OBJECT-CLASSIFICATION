@@ -103,8 +103,7 @@ def get_factor_list(param_value_list: list[Union[float]]) -> list[Union[float]]:
 
     
 
-def generate_experiment_configs(training_config: dict, 
-                                model_configs_list: Sequence[dict],
+def generate_experiment_configs(training_config: dict,
                                 device_name: str = 'cpu') -> list[dict]:
     logger = logging.getLogger(__name__)
     logger.info(f'START: generate_experiment_config.')
@@ -151,17 +150,14 @@ def generate_experiment_configs(training_config: dict,
         combo_dict = dict(zip(keys, combo))
         combo_dict.update(static_params)
 
-        for model_config in model_configs_list:
             
-            # get model config
-            dynamic_config = dict(zip(keys, combo))
-            
-            exp_config = static_params.copy()
-            exp_config.update(dynamic_config)
-            exp_config['model_config'] = model_config
-            exp_config['model_config']['num_classes'] = exp_config['num_classes']
-            
-            exp_configs.append(exp_config)
+        # get model config
+        dynamic_config = dict(zip(keys, combo))
+        
+        exp_config = static_params.copy()
+        exp_config.update(dynamic_config)
+        
+        exp_configs.append(exp_config)
         
     logger.info(f'Generated {len(exp_configs)} experiment configurations.')
     logger.info(f'STOP: generate_experiment_config')
@@ -194,11 +190,6 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
 
     base_dir = pth.Path(base_dir)
     config_files_dir = base_dir.joinpath('training_configs')
-    model_configs_dir = base_dir.joinpath('model_configs')
-
-    model_configs_paths_list = list(model_configs_dir.rglob('*.json'))
-    logger.info(f'Found {len(model_configs_paths_list)} model configs in dir {model_configs_dir}')
-
 
     if mode == 0 or mode == 1:
         training_config = load_json(config_files_dir.joinpath('config_train_single.json'))
@@ -206,16 +197,8 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
         training_config = load_json(config_files_dir.joinpath('config_train.json'))
     
     logger.info(f'Loaded training config for mode: {mode}.')
-
-    if mode == 0 or mode == 1:
-        model_configs_paths_list = [p for p in model_configs_paths_list if "single" in p.stem]
-    else:
-        model_configs_paths_list = [p for p in model_configs_paths_list if "single" not in p.stem]
     
     training_config = convert_str_values(training_config)
-    model_configs_list, _ = check_models(model_configs_paths_list, max_input_size=(max(training_config['batch_size']), 3, 640, 640), max_memory_GB=32)
-    
-    assert model_configs_list != 0, "No models compiled. Check model_configs - most likely too big models are defined"
 
     if mode == 3:
         device = torch.device('cuda') if (('cuda' in device_name.lower() or 'gpu' in device_name.lower()) and torch.cuda.is_available()) else torch.device('cpu')
@@ -226,11 +209,9 @@ def load_config(base_dir: Union[str, pth.Path], device_name: str, mode: int = 0)
 
         training_config['model'] = None
 
-        return [training_config, model_configs_list]
+        return training_config
     else:
-        exp_configs = generate_experiment_configs(training_config, 
-                                            model_configs_list, 
-                                            device_name = device_name)
+        exp_configs = generate_experiment_configs(training_config, device_name = device_name)
         
         logger.info(f'STOP: load_config. All files loaded.')
 
@@ -397,7 +378,6 @@ def case_based_training(exp_configs: list[dict],
 def objective_function(trial: optuna.Trial,
                        exp_config: list[dict], # exp config, converted from str
                        model_name: str,
-                       model_configs_list: list[dict],
                        checkpoint: object) -> float:
     
     """
@@ -408,10 +388,6 @@ def objective_function(trial: optuna.Trial,
     logger.info(f'START: objective_function')
 
     existing_ok = False
-
-
-    model_config_index = trial.suggest_categorical('model_config_index', range(len(model_configs_list)))
-    model_config = model_configs_list[model_config_index]
 
     batch_size = get_step_list(exp_config['batch_size'])
     epochs = get_step_list(exp_config['epochs'])
@@ -426,24 +402,13 @@ def objective_function(trial: optuna.Trial,
     pc_start = trial.suggest_float('pc_start', exp_config['pc_start'][0], exp_config['pc_start'][1], step=exp_config['pc_start'][2])
     div_factor = trial.suggest_int('div_factor', exp_config['div_factor'][0], exp_config['div_factor'][1], log=True)
     fin_div_factor = trial.suggest_int('final_div_factor', exp_config['final_div_factor'][0], exp_config['final_div_factor'][1], log=True)
-    num_neighbors = trial.suggest_int('num_neighbors', exp_config['num_neighbors'][0], exp_config['num_neighbors'][1], step = exp_config['num_neighbors'][2])
-    num_points = trial.suggest_int('num_points', exp_config['num_points'][0], exp_config['num_points'][1], step = exp_config['num_points'][2])
-
-    model_config.update({
-        'num_neighbors': num_neighbors
-    })
-
-    model_config['num_classes'] = exp_config['num_classes']
 
     exp_config = exp_config.copy()
     exp_config.update({
-        'model_config': model_config,
         'learning_rate': lr,
         'weight_decay': weight_decay,
         'batch_size': batch_size,
         'epochs': epochs,
-        'num_neighbors': num_neighbors,
-        'num_points': num_points,
         'focal_loss_gamma': focal_loss_gamma,
         'pc_start': pc_start,
         'div_factor': div_factor,
@@ -455,8 +420,6 @@ def objective_function(trial: optuna.Trial,
     for key, value in exp_config.items():
         if key != 'model_config':
             logger.info(f'parameters: {key}: {value}')
-    for key, value in model_config.items():
-        logger.info(f'model_config: {key}: {value}')
 
     
     # start training
@@ -494,7 +457,7 @@ def objective_function(trial: optuna.Trial,
         logger.info(f'Epoch {epoch_idx+1}/{exp_config["epochs"]}: best_val_acc: {best_val_accuracy:.3f}, best_val_loss: {best_val_loss:.3f}, best_val_miou: {best_val_miou:.3f}, final_val: {final_val:.3f}')
 
         # report acutal results for prunning
-        
+        trial.report(final_val, step=epoch_idx)
 
         if trial.should_prune():
             logger.info(f'Pruning trial: {trial.number}')
@@ -528,10 +491,6 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
         pruner=pruner)
     logger.info(f'Study created. Check ')
 
-
-    model_configs = exp_config[1]
-    exp_config = exp_config[0]
-
     train_repeat_old = exp_config['train_repeat']
     
     # Create progress bar
@@ -554,7 +513,6 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
     study.optimize(lambda trial: objective_function(trial,
                                                     exp_config=exp_config,
                                                     model_name = model_name,
-                                                    model_configs_list=model_configs,
                                                     checkpoint=checkpoint),
                    n_trials=n_trials,
                    callbacks=[callback])
@@ -572,15 +530,9 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
     pprint(f'Best trial params:\n{best_params}')
     print(20*'=')
 
-
-    best_model_config = model_configs[best_params.pop('model_config_index')] 
-
     final_exp_config = exp_config.copy()
     final_exp_config.update(best_params)
     final_exp_config.update({'train_repeat': train_repeat_old})
-
-
-    final_exp_config['model_config'] = best_model_config
 
     print('Training the best model last time: ')
 
@@ -631,15 +583,14 @@ def argparser():
         '--mode',
         type=int,
         default=0,
-        choices=[0, 1, 2, 3, 4], # choice limit
+        choices=[0, 1, 2, 3], # choice limit
         help=(
             "Device for tensor based computation.\n"
             'Pick:\n'
             '0: test\n'
             '1: single training\n'
             '2: multiple trainings, grid_based\n'
-            '3: multiple trainings, with optuna\n'
-            '4: only check models'
+            '3: multiple trainings, with optuna'
         )
     )
 
@@ -691,14 +642,6 @@ def main():
         optuna_based_training(exp_config=exp_configs,
                               model_name=model_name,
                               n_trials=80)
-    elif args.mode == 4:
-        model_configs_dir = base_path.joinpath('model_configs')
-        model_configs_paths_list = list(model_configs_dir.rglob('*.json'))
-
-        check_models(model_configs_paths=model_configs_paths_list, 
-                     max_input_size=(1, 8192, 4), 
-                     max_memory_GB=20,
-                     verbose=True)
 
         
 

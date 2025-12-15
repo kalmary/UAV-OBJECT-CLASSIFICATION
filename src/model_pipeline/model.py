@@ -183,8 +183,11 @@ class YOLO(nn.Module):
             'yolo-l': create_model_config('large', 1.00, 1.00),     # High accuracy
             'yolo-x': create_model_config('xlarge', 1.33, 1.25),    # Best accuracy
         }
-
-        config = CONFIGS[config_name]
+        
+        try:
+            config = CONFIGS[config_name]
+        except KeyError:
+            raise KeyError(f"Invalid config name: {config_name}. Valid options are: {list(CONFIGS.keys())}")
 
         
         self.num_classes = num_classes
