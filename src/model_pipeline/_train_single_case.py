@@ -17,6 +17,7 @@ sys.path.append(str(src_dir))
 from utils.yolo_accuracy import YOLOMetrics
 from utils.yolo_loss import YOLOLoss, ModelEMA
 from utils.anchors_search import find_optimal_anchors
+from utils.non_max_suppression import non_max_suppression
 
 from utils import get_dataset_len
 from utils import calculate_class_weights
@@ -231,9 +232,11 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
 
                 loss_hist.append(avg_loss_t)
 
+                metrics.reset()
                 progressbar_v = tqdm(valLoader, desc=f"Epoch validation {epoch + 1}/ {training_dict['epochs']}", total=total_v, position=3, leave=False)
 
-                # ema.apply_to(model) # TODO can i apply ema in validation?
+
+
                 model.eval()
                 with torch.no_grad():
                     for batch_x, batch_y in progressbar_v:
@@ -241,14 +244,17 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
                         batch_x = batch_x.to(training_dict['device'])
                         outputs = model(batch_x)
 
-                        outputs = outputs.to(device_loss)
+                        outputs = [o.to(device_loss) for o in outputs]
+
                         batch_y = batch_y.to(device_loss)
 
                         loss_v = criterion_v(outputs, batch_y)
 
-                        metrics.update(outputs, batch_y)
+                        predictions = non_max_suppression(outputs)
+                        metrics.update(predictions, batch_y)
 
                         epoch_loss_v += loss_v.item() * batch_y.size(0)
+                        epoch_samples_v += batch_y.size(0)
 
                         avg_loss_v = epoch_loss_v / epoch_samples_v
                         progressbar_v.set_postfix({
