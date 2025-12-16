@@ -14,8 +14,12 @@ from _data_loader import *
 src_dir = pth.Path(__file__).parent.parent
 sys.path.append(str(src_dir))
 
-from utils import compute_mIoU, calculate_weighted_accuracy
-from utils import calculate_class_weights, get_dataset_len
+from utils.yolo_accuracy import YOLOMetrics
+from utils.yolo_loss import YOLOLoss, ModelEMA
+from utils.anchors_search import find_optimal_anchors
+
+from utils import get_dataset_len
+from utils import calculate_class_weights
 from utils import wrap_hist
 
 from tqdm import tqdm
@@ -58,7 +62,7 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
         total_t = get_dataset_len(trainLoader)
         total_v = get_dataset_len(valLoader)
 
-        class_weights_t = calculate_class_weights(loader = trainLoader, 
+        class_weights_t = calculate_class_weights(loader = trainLoader,  # TODO change to YOLO version
                                                 num_classes=training_dict['num_classes'], 
                                                 method='effective',
                                                 total=total_t, 
@@ -98,7 +102,21 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
                             batch_size=None,
                             num_workers = 10,
                             pin_memory=True)
+        
 
+        anchors_t = find_optimal_anchors(trainLoader, 
+                            num_anchors=9,
+                            img_size=350,
+                            max_samples=10000,
+                            total=total_t,
+                            verbose=False)
+
+        anchors_v = find_optimal_anchors(valLoader,
+                            num_anchors=9,
+                            img_size=350,
+                            max_samples=10000,
+                            total=total_v,
+                            verbose=False)
 
 
         if training_dict['model'] is None:
@@ -108,16 +126,21 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
             model = training_dict['model']
 
         model.to(training_dict['device'])
+        ema = ModelEMA(model, decay=0.9999)
         
-        criterion_t = FocalLoss(alpha=class_weights_t.to(device_loss),
-                                gamma=training_dict['focal_loss_gamma'],
-                                smoothing=0.1,
-                                reduction='mean').to(device_loss) # TODO double check - Labels smoothing is good for better generalization, but exact impact must be investigated
+        criterion_t = YOLOLoss(num_classes=training_dict['num_classes'],
+                                anchors=anchors_t,
+                                img_size=training_dict['img_size'],
+                                focal_alpha=class_weights_t,
+                                focal_gamma=training_dict['focal_loss_gamma']).to(device_loss)
         
-        criterion_v = FocalLoss(alpha=class_weights_v.to(device_loss),
-                                gamma=training_dict['focal_loss_gamma'],
-                                smoothing=0.1,
-                                reduction='mean').to(device_loss)
+        criterion_v = YOLOLoss(num_classes=training_dict['num_classes'],
+                               anchors=anchors_v,
+                               img_size=training_dict['img_size'],
+                               focal_alpha=class_weights_v,
+                               focal_gamma=training_dict['focal_loss_gamma']).to(device_loss)
+        
+        metrics = YOLOMetrics(num_classes=training_dict['num_classes'])
 
         optimizer = optim.AdamW(model.parameters(), lr = training_dict['learning_rate'], weight_decay=training_dict['weight_decay'])
 
@@ -133,12 +156,13 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
         )
 
         loss_hist = []
-        acc_hist = []
-        miou_hist = []
 
         loss_v_hist = []
-        acc_v_hist = []
-        miou_v_hist = []
+        mAP05_hist = []
+        mAP0595_hist = []
+        precision_hist = []
+        recall_hist = []
+        f1_hist = []
 
 
         repeat_pbar = tqdm(range(training_dict['train_repeat']), 
@@ -159,9 +183,6 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
 
                 epoch_loss_t = 0.
                 epoch_loss_v = 0.
-
-                epoch_accuracy_t = 0.
-                epoch_accuracy_v = 0.
 
                 epoch_samples_t = 0
                 epoch_samples_v = 0
@@ -188,6 +209,7 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
                     optimizer.zero_grad()
                     loss_t.backward()
                     optimizer.step()
+                    ema.update(model)
 
                     try:
                         scheduler.step()
@@ -208,12 +230,11 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
                     })
 
                 loss_hist.append(avg_loss_t)
-                acc_hist.append(-1.)  # Not computed for training
-                miou_hist.append(-1.)  # Not computed for training
 
                 progressbar_v = tqdm(valLoader, desc=f"Epoch validation {epoch + 1}/ {training_dict['epochs']}", total=total_v, position=3, leave=False)
-                model.eval()
 
+                # ema.apply_to(model) # TODO can i apply ema in validation?
+                model.eval()
                 with torch.no_grad():
                     for batch_x, batch_y in progressbar_v:
 
@@ -225,45 +246,44 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
 
                         loss_v = criterion_v(outputs, batch_y)
 
-                        accuracy_v = calculate_weighted_accuracy(outputs, batch_y, weights=class_weights_v)
-                        mIoU, _ = compute_mIoU(outputs, batch_y, training_dict['num_classes'])
-
+                        metrics.update(outputs, batch_y)
 
                         epoch_loss_v += loss_v.item() * batch_y.size(0)
-                        epoch_accuracy_v += accuracy_v * batch_y.size(0)
-                        epoch_miou_v += mIoU * batch_y.size(0)
-                        epoch_samples_v += batch_y.size(0)
 
                         avg_loss_v = epoch_loss_v / epoch_samples_v
-                        avg_accuracy_v = epoch_accuracy_v / epoch_samples_v
-                        avg_miou_v = epoch_miou_v / epoch_samples_v
-
                         progressbar_v.set_postfix({
-                            "Loss_val": f"{avg_loss_v:.6f}",
-                            "Acc_val": f"{avg_accuracy_v:.6f}",
-                            "mIoU_val": f"{avg_miou_v:.6f}"
+                            "Loss_val": f"{avg_loss_v:.6f}"
                         })
 
                 loss_v_hist.append(avg_loss_v)
-                acc_v_hist.append(avg_accuracy_v)
-                miou_v_hist.append(avg_miou_v)
+                
 
-                # early_stopping.check_early_stop(loss_v_hist[-1])
 
-                hist_dict = wrap_hist(acc_hist = acc_hist,
-                                        loss_hist = loss_hist,
-                                        miou_hist = miou_hist,
-                                        acc_v_hist = acc_v_hist,
-                                        loss_v_hist = loss_v_hist,
-                                        miou_v_hist = miou_v_hist)
+                metrics_values = metrics.compute()
+                mAP05_hist.append(metrics_values['mAP@0.5'])
+                mAP0595_hist.append(metrics_values['mAP@0.5:0.95'])
+                precision_hist.append(metrics_values['precision'])
+                recall_hist.append(metrics_values['recall'])
+                f1_hist.append(metrics_values['f1'])
+
+                hist_dict = wrap_hist(loss_hist = loss_hist,
+                                      loss_hist_val = loss_v_hist,
+                                      mAP05_hist = mAP05_hist,
+                                      mAP0595_hist = mAP0595_hist,
+                                      precision_hist = precision_hist,
+                                      recall_hist = recall_hist,
+                                      f1_hist = f1_hist)
 
                 yield model, hist_dict
-
 
                 epoch_pbar.set_postfix({
                     "Loss_train": f"{avg_loss_t:.6f}",
                     "Loss_val": f"{avg_loss_v:.6f}",
-                    "Acc_val": f"{avg_accuracy_v:.6f}",
+                    "mAP@0.5_val": f"{hist_dict['mAP@0.5']:.6f}",
+                    "mAP@0.5:0.95_val": f"{hist_dict['mAP@0.5:0.95']:.6f}",
+                    "precision:": f"{hist_dict['precision']:.6f}",
+                    "recall:": f"{hist_dict['recall']:.6f}",
+                    "f1:": f"{hist_dict['f1']:.6f}",
                     "learning_rate_max": f"{training_dict['learning_rate']:.10f}"
                 })
 

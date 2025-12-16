@@ -300,25 +300,22 @@ class Checkpoint:
         save2json(best_config, config_path)
         logger.info(f'New config for model {model_name} saved to: {config_path}')
 
+        plotter_obj = Plotter(best_config['num_classes'], plots_dir = plot_dir)
+        # iterate over every metric to plot it
+        # group into one plot metric and metric val
+        for metric_name, metric_values in result_hist.items():
+            if 'val' in metric_name:
+                continue
 
+            val_metric = None
+            if metric_name + '_val' in result_hist.keys():
+                val_metric = result_hist[metric_name + '_val']
 
-        if len(result_hist['acc_hist']) > 1:
-            plotter_obj = Plotter(best_config['num_classes'], plots_dir = plot_dir)
+            plotter_obj.plot_metric_hist(f'{metric_name}_{model_name}.png',
+                                         metric_values,
+                                         val_metric=val_metric)
 
-
-            plotter_obj.plot_metric_hist(f'Loss_{model_name}.png',
-                                         result_hist['loss_hist'],
-                                         result_hist['loss_v_hist'])
-
-            plotter_obj.plot_metric_hist(f'Accuracy_{model_name}.png', 
-                                    result_hist['acc_hist'],
-                                    result_hist['acc_v_hist'])
-            
-            plotter_obj.plot_metric_hist(f'mIoU_{model_name}.png', 
-                                    result_hist['miou_hist'],
-                                    result_hist['miou_v_hist'])
-
-            logger.info(f'Metrics history plots for {model_name} saved to: {plot_dir}')
+            logger.info(f'Metric {metric_name} plot for {model_name} saved to: {plot_dir}')
 
 
         self.save_new = False
@@ -423,9 +420,12 @@ def objective_function(trial: optuna.Trial,
 
     
     # start training
-    best_val_accuracy = 0.0
     best_val_loss = float('inf')
-    best_val_miou = 0.0
+    best_mAP05 = 0.
+    best_mAP0595 = 0.
+    best_precision = 0.
+    best_recall = 0.
+    best_f1 = 0.
 
     for epoch_idx, (model, result_hist) in enumerate(train_model(training_dict=exp_config)):
         
@@ -434,19 +434,35 @@ def objective_function(trial: optuna.Trial,
             trial.report(0.0, step=epoch_idx)
             raise optuna.exceptions.TrialPruned()
             
+        
+        # loss_hist = loss_hist,
+        #   loss_v_hist = loss_v_hist,
+        #   mAP05_hist = mAP05_hist,
+        #   mAP0595_hist = mAP0595_hist,
+        #   precision_hist = precision_hist,
+        #   recall_hist = recall_hist,
+        #   f1_hist = f1_hist     
 
         # goal is to maximize val_acc + 1/val_loss
-        final_val_accuracy = result_hist['acc_v_hist'][-1]
-        final_val_loss = result_hist['loss_v_hist'][-1]
-        final_val_miou = result_hist['miou_v_hist'][-1]
 
-        best_val_accuracy = max(best_val_accuracy, final_val_accuracy)
-        best_val_miou = max(best_val_miou, final_val_miou)
+        final_val_loss = result_hist['loss_hist_val'][-1]
+        # final_mAP05 = result_hist['mAP05_hist'][-1]
+        # final_mAP0595 = result_hist['mAP0595_hist'][-1]
+        final_precision = result_hist['precision_hist'][-1]
+        final_recall = result_hist['recall_hist'][-1]
+        final_f1 = result_hist['f1_hist'][-1]
+
         best_val_loss = min(best_val_loss, final_val_loss)
+        # best_mAP05 = max(best_mAP05, final_mAP05)
+        # best_mAP0595 = max(best_mAP0595, final_mAP0595)
+        best_precision = max(best_precision, final_precision)
+        best_recall = max(best_recall, final_recall)
+        best_f1 = max(best_f1, final_f1)
+
 
 
         normalized_loss = 1 / (1 + best_val_loss)
-        final_val = 0.4 * best_val_accuracy + 0.2 * normalized_loss + 0.4 * best_val_miou # TODO tuning might be necessary
+        final_val = 0.3*normalized_loss + 0.2*best_precision + 0.2*best_recall + 0.2*best_f1
 
         checkpoint.check_checkpoint(model,
                                     model_name,
@@ -454,7 +470,7 @@ def objective_function(trial: optuna.Trial,
                                     exp_config,
                                     result_hist)
 
-        logger.info(f'Epoch {epoch_idx+1}/{exp_config["epochs"]}: best_val_acc: {best_val_accuracy:.3f}, best_val_loss: {best_val_loss:.3f}, best_val_miou: {best_val_miou:.3f}, final_val: {final_val:.3f}')
+        logger.info(f'Epoch {epoch_idx+1}/{exp_config["epochs"]}: best_precision: {best_precision:.3f}, best_recall: {best_recall:.3f}, best_f1: {best_f1:.3f}, final_val: {final_val:.3f}')
 
         # report acutal results for prunning
         trial.report(final_val, step=epoch_idx)
