@@ -277,9 +277,10 @@ class Checkpoint:
         if final_val > self.final_val_best:
             self.save_new = True
             self.final_val_best = final_val
+
         
         if not self.save_new:
-            return [model, exp_config, config_path]
+            return model, exp_config, config_path, result_hist
 
         if not self.existing_ok:
                 for file_path in plot_dir.iterdir():
@@ -294,6 +295,7 @@ class Checkpoint:
 
 
         best_config = exp_config
+        best_hist = result_hist
         best_config['device'] = str(best_config['device'])
 
         config_path = dict_files_dir.joinpath(f'{model_path.stem}_config.json')
@@ -319,7 +321,7 @@ class Checkpoint:
 
 
         self.save_new = False
-        return model, best_config, config_path
+        return model, best_config, config_path, best_hist
 
         
 
@@ -552,7 +554,7 @@ def optuna_based_training(exp_config: list[dict], # only one, non converted conf
 
     print('Training the best model last time: ')
 
-    case_based_training(final_exp_config,
+    case_based_training([final_exp_config],
                         model_name=model_name)
     
     logger.info(f'STOP: optuna_based_training')
