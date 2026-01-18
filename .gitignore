@@ -163,3 +163,4 @@ cython_debug/
 **/training_results/
 **/final_files/
 **/db.sqlite3
+**/data/
