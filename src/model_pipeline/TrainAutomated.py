@@ -435,7 +435,7 @@ def objective_function(trial: optuna.Trial,
             logger.error(f'ERROR: objective_function. Empty result_hist. Trial pruned.')
             trial.report(0.0, step=epoch_idx)
             raise optuna.exceptions.TrialPruned()
-            
+        
         
         # loss_hist = loss_hist,
         #   loss_v_hist = loss_v_hist,

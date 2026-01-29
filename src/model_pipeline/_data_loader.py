@@ -52,7 +52,7 @@ class Dataset(IterableDataset):
                     scale_limit=0.2,
                     rotate_limit=30,
                     border_mode=cv2.BORDER_CONSTANT,
-                    fill=0,  # ← Use 'fill' instead of 'value'
+                    value=0,  # For older versions use 'value', newer use 'fill'
                     p=0.5
                 ),
                 
@@ -85,9 +85,9 @@ class Dataset(IterableDataset):
                     A.CLAHE(p=1.0),
                 ], p=0.3),
                 
-                # Noise
+                # Noise - FIXED: use var_limit instead of noise_scale_factor for Albumentations >= 1.3
                 A.OneOf([
-                    A.GaussNoise(noise_scale_factor=(10.0, 50.0), p=1.0),
+                    A.GaussNoise(var_limit=(10.0, 50.0), p=1.0),  # ← FIXED
                     A.ISONoise(p=1.0),
                 ], p=0.2),
                 

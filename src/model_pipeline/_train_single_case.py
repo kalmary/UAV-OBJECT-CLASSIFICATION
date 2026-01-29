@@ -19,9 +19,8 @@ from utils.yolo_loss import YOLOLoss, ModelEMA
 from utils.anchors_search import find_optimal_anchors
 from utils.non_max_suppression import non_max_suppression
 
-from utils import get_dataset_len
-from utils import calculate_class_weights
-from utils import wrap_hist
+from utils.nn_utils.src.accuracy_metrics import get_dataset_len, calculate_class_weights
+from utils.nn_utils.src.file_handling import wrap_hist
 
 from tqdm import tqdm
 from typing import Union, Generator
@@ -34,8 +33,9 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
     device_loader = device_gpu
     device_loss = device_gpu
 
+    # FIX 1: resolution_xy as tuple (350, 350) instead of int 350
     train_dataset = Dataset(path_dir=training_dict['data_path_train'],
-                            resolution_xy=350,
+                            resolution_xy=(350, 350),  # ← FIXED: tuple
                             batch_size=training_dict['batch_size'],
                             shuffle=True,
                             device=device_loader)
@@ -47,9 +47,9 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
     
 
 
-
-    val_dataset = Dataset(base_dir=training_dict['data_path_val'],
-                          resolution_xy=350,
+    # FIX 2: base_dir → path_dir
+    val_dataset = Dataset(path_dir=training_dict['data_path_val'],  # ← FIXED: path_dir
+                          resolution_xy=(350, 350),  # ← FIXED: tuple
                           batch_size=training_dict['batch_size'],
                           shuffle=False,
                           device=device_loader)
@@ -77,8 +77,9 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
                                                 device=device_loss,
                                                 verbose=False)
         
+        # FIX 3: recreate dataset with weights - resolution_xy as tuple
         train_dataset = Dataset(path_dir=training_dict['data_path_train'],
-                                resolution_xy=350,
+                                resolution_xy=(350, 350),  # ← FIXED: tuple
                                 batch_size=training_dict['batch_size'],
                                 shuffle=True,
                                 weights=class_weights_t,
@@ -91,9 +92,9 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
         
 
 
-
-        val_dataset = Dataset(base_dir=training_dict['data_path_val'],
-                            resolution_xy=350,
+        # FIX 4: base_dir → path_dir
+        val_dataset = Dataset(path_dir=training_dict['data_path_val'],  # ← FIXED: path_dir
+                            resolution_xy=(350, 350),  # ← FIXED: tuple
                             batch_size=training_dict['batch_size'],
                             shuffle=False,
                             weights=class_weights_v,
@@ -301,3 +302,5 @@ def train_model(training_dict: dict) -> Union[Generator[tuple[nn.Module, dict], 
             pass
         torch.cuda.empty_cache()
         yield None, {}
+
+
